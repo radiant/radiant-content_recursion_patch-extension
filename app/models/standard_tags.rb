@@ -91,61 +91,29 @@ module StandardTags
   desc %{
     Cycles through each of the children. Inside this tag all page attribute tags
     are mapped to the current child page.
-    
-    Supply @paginated="true"@ to display a paginated list. The will_paginate options
-    can also be specified, including @per_page@, @previous_label@, @next_label@,
-    @separator@, @inner_window@ and @outer_window@.
 
     *Usage:*
     
-    <pre><code><r:children:each [offset="number"] [limit="number"]
-     [by="published_at|updated_at|created_at|slug|title|keywords|description"]
-     [order="asc|desc"] 
-     [status="draft|reviewed|published|hidden|all"]
-     [paginated="true"]
-     [per_page="number"]
-     >
+    <pre><code><r:children:each [offset="number"] [limit="number"] [by="attribute"] [order="asc|desc"]
+     [status="draft|reviewed|published|hidden|all"]>
      ...
     </r:children:each>
     </code></pre>
   }
   tag 'children:each' do |tag|
-    paging = pagination_control(tag)
     options = children_find_options(tag)
     result = []
+    children = tag.locals.children
     tag.locals.previous_headers = {}
-    displayed_children = paging ? tag.locals.children.paginate(options.merge(paging.slice(:page, :per_page))) : tag.locals.children.all(options)
-    displayed_children.each_with_index do |item, i|
+    kids = children.find(:all, options)
+    kids.each_with_index do |item, i|
       tag.locals.child = item
       tag.locals.page = item
       tag.locals.first_child = i == 0
-      tag.locals.last_child = i == displayed_children.length - 1
+      tag.locals.last_child = i == kids.length - 1
       result << tag.expand
     end
-    if paging && displayed_children.total_pages > 1
-      tag.locals.paginated_list = displayed_children
-      result << tag.render('pagination')
-    end
     result
-  end
-
-  desc %{
-    The pagination tag is not usually called directly. Supply paginated="true" when you display a list and it will
-    be paginated automatically.
-
-    *Usage:*
-    
-    <pre><code><r:children:each paginated="true" per_page="50">
-      <r:child>...</r:child>
-    </r:children:each>
-    </code></pre>
-  }
-  tag 'pagination' do |tag|
-    if tag.locals.paginated_list
-      options = tag.locals.pagination_parameters || pagination_control(tag)
-      options[:renderer] = Radiant::Pagination::LinkRenderer.new(tag)
-      will_paginate(tag.locals.paginated_list, options)
-    end
   end
 
   desc %{
@@ -423,14 +391,15 @@ module StandardTags
     <pre><code><r:if_content [part="part_name, other_part"] [inherit="true"] [find="any"]>...</r:if_content></code></pre>
   }
   tag 'if_content' do |tag|
+    page = tag.locals.page
     part_name = tag_part_name(tag)
     parts_arr = part_name.split(',')
     inherit = boolean_attr_or_error(tag, 'inherit', 'false')
     find = attr_or_error(tag, :attribute_name => 'find', :default => 'all', :values => 'any, all')
     expandable = true
     one_found = false
+    part_page = page
     parts_arr.each do |name|
-      part_page = tag.locals.page
       name.strip!
       if inherit
         while (part_page.part(name).nil? and (not part_page.parent.nil?)) do
@@ -458,13 +427,14 @@ module StandardTags
     <pre><code><r:unless_content [part="part_name, other_part"] [inherit="false"] [find="any"]>...</r:unless_content></code></pre>
   }
   tag 'unless_content' do |tag|
+    page = tag.locals.page
     part_name = tag_part_name(tag)
     parts_arr = part_name.split(',')
     inherit = boolean_attr_or_error(tag, 'inherit', false)
     find = attr_or_error(tag, :attribute_name => 'find', :default => 'all', :values => 'any, all')
     expandable, all_found = true, true
+    part_page = page
     parts_arr.each do |name|
-      part_page = tag.locals.page
       name.strip!
       if inherit
         while (part_page.part(name).nil? and (not part_page.parent.nil?)) do
@@ -571,36 +541,6 @@ module StandardTags
     page = tag.locals.page
     if author = page.created_by
       author.name
-    end
-  end
-
-  desc %{
-    Renders the Gravatar of the author of the current page or the named user.
-
-    *Usage:*
-
-    <pre><code><r:gravatar /></code></pre>
-
-    or
-
-    <pre><code><r:gravatar [name="User Name"]
-        [rating="G | PG | R | X"]
-        [size="32px"] /></code></pre>
-  }
-  tag 'gravatar' do |tag|
-    page = tag.locals.page
-    name = (tag.attr['name'] || page.created_by.name)
-    rating = (tag.attr['rating'] || 'G')
-    size = (tag.attr['size'] || '32px')
-    email = User.find_by_name(name).email
-    if email != ''
-      url = 'http://www.gravatar.com/avatar.php?'
-      url << "gravatar_id=#{Digest::MD5.new.update(email)}"
-      url << "&rating=#{rating}"
-      url << "&size=#{size.to_i}"
-      url
-    else
-      "#{request.protocol}#{request.host_with_port}/images/admin/avatar_#{([size.to_i] * 2).join('x')}.png"
     end
   end
 
@@ -835,10 +775,6 @@ module StandardTags
        page's URL
     * @selected@ specifies the state of the link when the current page matches
        is a child of the specified url
-    # @if_last@ renders its contents within a @normal@, @here@ or
-      @selected@ tag if the item is the last in the navigation elements
-    # @if_first@ renders its contents within a @normal@, @here@ or
-      @selected@ tag if the item is the first in the navigation elements
 
     The @between@ tag specifies what should be inserted in between each of the links.
 
@@ -863,13 +799,11 @@ module StandardTags
       key = parts.join(':')
       [key.strip, value.strip]
     end
-    pairs.each_with_index do |(title, url), i|
+    pairs.each do |title, url|
       compare_url = remove_trailing_slash(url)
       page_url = remove_trailing_slash(self.url)
       hash[:title] = title
       hash[:url] = url
-      tag.locals.first_child = i == 0
-      tag.locals.last_child = i == pairs.length - 1
       case page_url
       when compare_url
         result << (hash[:here] || hash[:selected] || hash[:normal]).call
@@ -893,54 +827,6 @@ module StandardTags
       hash = tag.locals.navigation
       hash[symbol]
     end
-  end
-
-  desc %{
-    Renders the containing elements if the element is the first
-    in the navigation list
-
-    *Usage:*
-
-    <pre><code><r:normal><r:if_first>...</r:if_first></r:normal></code></pre>
-  }
-  tag 'navigation:if_first' do |tag|
-    tag.expand if tag.locals.first_child
-  end
-
-  desc %{
-    Renders the containing elements unless the element is the first
-    in the navigation list
-
-    *Usage:*
-
-    <pre><code><r:normal><r:unless_first>...</r:unless_first></r:normal></code></pre>
-  }
-  tag 'navigation:unless_first' do |tag|
-    tag.expand unless tag.locals.first_child
-  end
-
-  desc %{
-    Renders the containing elements unless the element is the last
-    in the navigation list
-
-    *Usage:*
-
-    <pre><code><r:normal><r:unless_last>...</r:unless_last></r:normal></code></pre>
-  }
-  tag 'navigation:unless_last' do |tag|
-    tag.expand unless tag.locals.last_child
-  end
-
-  desc %{
-    Renders the containing elements if the element is the last
-    in the navigation list
-
-    *Usage:*
-
-    <pre><code><r:normal><r:if_last>...</r:if_last></r:normal></code></pre>
-  }
-  tag 'navigation:if_last' do |tag|
-    tag.expand if tag.locals.last_child
   end
 
   desc %{
@@ -983,7 +869,7 @@ module StandardTags
     The namespace for 'meta' attributes.  If used as a singleton tag, both the description
     and keywords fields will be output as &lt;meta /&gt; tags unless the attribute 'tag' is set to 'false'.
 
-    *Usage:*
+    *Usage*:
 
     <pre><code> <r:meta [tag="false"] />
      <r:meta>
@@ -1005,7 +891,7 @@ module StandardTags
     Emits the page description field in a meta tag, unless attribute
     'tag' is set to 'false'.
 
-    *Usage:*
+    *Usage*:
 
     <pre><code> <r:meta:description [tag="false"] /> </code></pre>
   }
@@ -1023,7 +909,7 @@ module StandardTags
     Emits the page keywords field in a meta tag, unless attribute
     'tag' is set to 'false'.
 
-    *Usage:*
+    *Usage*:
 
     <pre><code> <r:meta:keywords [tag="false"] /> </code></pre>
   }
@@ -1038,16 +924,6 @@ module StandardTags
   end
 
   private
-
-    def pagination_control(tag)
-      attr = tag.attr.symbolize_keys
-      if attr[:paginated] == 'true'
-        tag.locals.paginating_page = tag.globals.page
-        tag.locals.pagination_parameters = pagination_parameters.merge(attr.slice(:previous_label, :next_label, :inner_window, :outer_window, :separator, :per_page))  # tag attributes take precedence over input parameters
-      else
-        false
-      end
-    end
 
     def children_find_options(tag)
       attr = tag.attr.symbolize_keys
@@ -1143,10 +1019,7 @@ module StandardTags
     end
 
     def dev?(request)
-      if dev_host = Radiant::Config['dev.host']
-        dev_host == request.host
-      else
-        request.host =~ /^dev\./
-      end
+      dev_host = Radiant::Config['dev.host']
+      request && ((dev_host && dev_host == request.host) || request.host =~ /^dev\./)
     end
 end
